@@ -1,0 +1,10 @@
+{
+  "look_back": 24,
+  "hidden_size": 50,
+  "num_layers": 2,
+  "dropout": 0.2,
+  "input_size": 1,
+  "resample_min": 5,
+  "model_path": "gru_cpu_model.keras",
+  "scaler_path": "scaler.pkl"
+}

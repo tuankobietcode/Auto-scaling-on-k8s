@@ -1,0 +1,250 @@
+════════════════════════════════════════════════════════════════════════════
+   GIẢI THÍCH LỰA CHỌN SIÊU THAM SỐ (HYPERPARAMETERS) — MÔ HÌNH GRU
+   Đề tài: Dự báo CPU Usage phục vụ Autoscaling chủ động trên Kubernetes (KEDA)
+════════════════════════════════════════════════════════════════════════════
+
+Tài liệu này giải thích cơ sở khoa học và thực tiễn của từng siêu tham số được
+sử dụng trong file train_gru.py. Mỗi tham số được trình bày theo cấu trúc:
+   (1) Giá trị đang dùng   (2) Vai trò   (3) Lý do chọn   (4) Đánh đổi (trade-off)
+
+
+────────────────────────────────────────────────────────────────────────────
+ PHẦN A — THAM SỐ DỮ LIỆU (DATA)
+────────────────────────────────────────────────────────────────────────────
+
+1. LOOK_BACK = 24  (độ dài cửa sổ trượt / sliding window)
+   ─────────────────────────────────────────────────────
+   • Vai trò : Số bước thời gian quá khứ mà mô hình "nhìn lại" để dự báo bước
+               kế tiếp. Dữ liệu lấy mẫu mỗi 5 phút → 24 bước = 24 × 5 = 120 phút
+               = 2 GIỜ lịch sử.
+   • Lý do   : - CPU của hệ thống thường có chu kỳ ngắn hạn (giờ cao điểm, các
+                 đợt xử lý theo lô...). Cửa sổ 2 giờ đủ dài để mô hình học được
+                 xu hướng và biến động gần, nhưng không quá dài gây nhiễu.
+               - Cửa sổ quá ngắn (vd 6 bước = 30 phút) → mô hình thiếu ngữ cảnh,
+                 dễ UNDERFIT.
+               - Cửa sổ quá dài (vd 288 bước = 1 ngày) → tăng độ phức tạp tính
+                 toán, vanishing gradient, và làm loãng tín hiệu gần (quan trọng
+                 nhất cho dự báo ngắn hạn 5 phút).
+   • Trade-off: Tăng LOOK_BACK → nhiều ngữ cảnh hơn nhưng chậm hơn & khó học.
+
+2. TRAIN / VAL / TEST = 0.80 / 0.10 / 0.10  (tỉ lệ chia dữ liệu)
+   ────────────────────────────────────────────────────────────
+   • Vai trò : Chia tập huấn luyện (học), tập kiểm định (chỉnh tham số, chống
+               overfit), và tập kiểm tra (đánh giá khách quan cuối cùng).
+   • Lý do   : - 80% dành cho train là tỉ lệ tiêu chuẩn, đủ dữ liệu để GRU học.
+               - QUAN TRỌNG: chia theo THỨ TỰ THỜI GIAN (chronological), KHÔNG
+                 xáo trộn (shuffle). Vì đây là chuỗi thời gian, việc shuffle sẽ
+                 làm rò rỉ thông tin tương lai vào quá khứ (data leakage) → kết
+                 quả đánh giá ảo, không phản ánh thực tế triển khai.
+               - Tập Test nằm ở cuối (dữ liệu mới nhất) mô phỏng đúng kịch bản
+                 thực tế: dùng quá khứ dự báo tương lai.
+
+
+────────────────────────────────────────────────────────────────────────────
+ PHẦN B — KIẾN TRÚC MÔ HÌNH (ARCHITECTURE)
+────────────────────────────────────────────────────────────────────────────
+
+3. SỐ LỚP GRU = 2  (GRU stacked / xếp chồng 2 lớp)
+   ───────────────────────────────────────────────
+   • Vai trò : Lớp GRU 1 (return_sequences=True) học các đặc trưng tạm thời
+               cấp thấp và truyền TOÀN BỘ chuỗi cho lớp 2; lớp GRU 2 tổng hợp
+               thành biểu diễn cấp cao hơn rồi xuất hidden state cuối cùng.
+   • Lý do   : - 2 lớp cho phép học biểu diễn phân cấp (hierarchical), mạnh hơn
+                 1 lớp khi chuỗi có cả mẫu ngắn hạn lẫn xu hướng dài hơn.
+               - Không chọn 3–4 lớp vì: dữ liệu CPU 1 chiều (univariate) không
+                 quá phức tạp; thêm lớp → tăng nguy cơ OVERFIT, thời gian huấn
+                 luyện lâu, lợi ích biên giảm dần (diminishing returns).
+   • Kết luận: 2 lớp là điểm cân bằng tốt giữa năng lực biểu diễn và rủi ro
+               overfit cho bài toán này.
+
+4. GRU_UNITS_1 = 50, GRU_UNITS_2 = 50  (số neuron mỗi lớp GRU)
+   ──────────────────────────────────────────────────────────
+   • Vai trò : Số đơn vị ẩn (hidden units) — quyết định "dung lượng nhớ" và
+               khả năng biểu diễn của mỗi lớp.
+   • Lý do   : - 50 là giá trị phổ biến, đã được kiểm chứng cho chuỗi thời gian
+                 đơn biến cỡ vừa. Đủ lớn để học mẫu phức tạp, đủ nhỏ để tránh
+                 overfit và giữ thời gian huấn luyện hợp lý.
+               - Lũy thừa của 2 (32, 64, 128) cũng dùng được, nhưng 50 cho thấy
+                 hiệu năng/độ phức tạp cân bằng trong quá trình thử nghiệm.
+   • Trade-off: ↑ units → năng lực tăng (giảm underfit) nhưng dễ overfit & chậm.
+               ↓ units → nhẹ, regularize tự nhiên, nhưng có thể underfit.
+
+5. DENSE_UNITS = 25  (lớp Dense ẩn trước đầu ra)
+   ─────────────────────────────────────────────
+   • Vai trò : Lớp fully-connected trung gian biến đổi biểu diễn từ GRU (50
+               chiều) thành đặc trưng cô đọng trước khi cho ra 1 giá trị dự báo.
+   • Lý do   : - Chọn 25 ≈ 1/2 số units GRU (50). Đây là quy tắc "thu hẹp dần"
+                 (funnel/bottleneck): giảm chiều từ từ 50 → 25 → 1 giúp mô hình
+                 chắt lọc thông tin mượt mà thay vì nén đột ngột 50 → 1.
+               - Dùng hàm kích hoạt ReLU để thêm tính phi tuyến, tăng khả năng
+                 mô hình hóa quan hệ phức tạp.
+   • Lớp cuối: Dense(1), KHÔNG có activation (tuyến tính) — đúng cho bài toán
+               hồi quy (regression) dự báo 1 giá trị liên tục.
+
+
+────────────────────────────────────────────────────────────────────────────
+ PHẦN C — CHỐNG QUÁ KHỚP (REGULARIZATION)
+────────────────────────────────────────────────────────────────────────────
+
+6. DROPOUT_RATE = 0.2  (tỉ lệ tắt ngẫu nhiên neuron khi train)
+   ──────────────────────────────────────────────────────────
+   • Vai trò : Trong mỗi bước huấn luyện, ngẫu nhiên "tắt" 20% neuron. Điều này
+               buộc mạng không phụ thuộc vào một số neuron nhất định → học được
+               đặc trưng tổng quát (robust) hơn, chống OVERFIT.
+   • Lý do   : - 0.2 (20%) là mức nhẹ–vừa, phù hợp khi mô hình không quá lớn.
+               - Đặt Dropout SAU mỗi lớp GRU để điều hòa luồng đặc trưng.
+               - Không chọn cao (0.4–0.5) vì có thể làm mất thông tin quá nhiều
+                 → underfit; không chọn 0 vì sẽ mất lớp bảo vệ chống overfit.
+   • Trade-off: ↑ dropout → regularize mạnh hơn (tốt khi overfit), nhưng ↑ quá
+               mức → underfit.
+
+7. L2_REG = 0.001  (L2 weight regularization / weight decay)
+   ─────────────────────────────────────────────────────────
+   • Vai trò : Thêm vào hàm mất mát một khoản phạt tỉ lệ với bình phương trọng
+               số → "ép" trọng số nhỏ lại, làm mô hình mượt và ổn định hơn,
+               giảm overfit.
+   • Lý do   : - 0.001 là giá trị nhỏ, chuẩn mực: đủ để kiềm chế trọng số lớn
+                 mà không bóp méo quá trình học.
+               - Kết hợp Dropout + L2 cho hiệu ứng regularize bổ trợ nhau.
+   • Trade-off: ↑ L2 → phạt mạnh, mô hình đơn giản hơn (chống overfit) nhưng quá
+               cao sẽ underfit.
+
+8. USE_BATCH_NORM = False  (Batch Normalization)
+   ─────────────────────────────────────────────
+   • Vai trò : Chuẩn hóa đầu ra trung gian để ổn định và tăng tốc huấn luyện.
+   • Lý do tắt: - Với mạng GRU 2 lớp cỡ vừa và đã có Dropout + L2, BatchNorm là
+                  KHÔNG cần thiết và đôi khi gây bất ổn cho mạng hồi tiếp (RNN).
+                - Để TÙY CHỌN bật (=True) như một "công tắc" dự phòng khi gặp
+                  hiện tượng huấn luyện không ổn định hoặc overfit nặng.
+
+
+────────────────────────────────────────────────────────────────────────────
+ PHẦN D — QUÁ TRÌNH HUẤN LUYỆN (TRAINING)
+────────────────────────────────────────────────────────────────────────────
+
+9. BATCH_SIZE = 32  (kích thước lô)
+   ────────────────────────────────
+   • Vai trò : Số mẫu xử lý trước mỗi lần cập nhật trọng số.
+   • Lý do   : - 32 là giá trị "mặc định vàng" trong deep learning: cân bằng
+                 giữa độ ổn định của gradient (lô lớn) và khả năng thoát điểm
+                 cực tiểu cục bộ nhờ nhiễu gradient (lô nhỏ).
+               - Vừa với bộ nhớ, huấn luyện nhanh, hội tụ ổn định.
+   • Trade-off: ↓ batch → gradient nhiều nhiễu hơn (đôi khi tổng quát tốt hơn,
+               nhưng chậm & dao động); ↑ batch → mượt nhưng dễ kẹt cực tiểu.
+
+10. LEARNING_RATE = 1e-4 (0.0001)  (tốc độ học)
+    ───────────────────────────────────────────
+   • Vai trò : Độ lớn mỗi bước cập nhật trọng số. Tham số nhạy cảm nhất.
+   • Lý do   : - 1e-4 là mức THẬN TRỌNG (nhỏ hơn mặc định 1e-3 của Adam): học
+                 chậm nhưng ổn định, tránh "nhảy vọt" làm loss dao động/phân kỳ.
+               - Phù hợp với chuỗi thời gian cần hội tụ mượt và chính xác.
+               - Dùng kèm Adam optimizer (tự điều chỉnh learning rate thích nghi
+                 theo từng tham số) → kết hợp ổn định.
+   • Trade-off: ↓ LR → an toàn nhưng chậm; ↑ LR → nhanh nhưng dễ vọt/phân kỳ.
+
+11. EPOCHS = 100  (số vòng lặp tối đa)
+    ───────────────────────────────────
+   • Vai trò : Số lần tối đa mô hình duyệt toàn bộ tập train.
+   • Lý do   : - Đặt 100 là GIỚI HẠN TRẦN, không nhất thiết chạy hết. Thực tế
+                 EarlyStopping sẽ tự dừng sớm khi mô hình ngừng cải thiện → 100
+                 chỉ đảm bảo "đủ chỗ" để mô hình hội tụ.
+
+
+────────────────────────────────────────────────────────────────────────────
+ PHẦN E — CALLBACKS (CƠ CHẾ ĐIỀU KHIỂN THÔNG MINH KHI TRAIN)
+────────────────────────────────────────────────────────────────────────────
+
+12. EarlyStopping — PATIENCE_ES = 20, restore_best_weights=True
+    ───────────────────────────────────────────────────────────
+   • Vai trò : Theo dõi val_loss; nếu sau 20 epoch liên tiếp không cải thiện thì
+               DỪNG sớm và KHÔI PHỤC lại trọng số tốt nhất.
+   • Lý do   : - Đây là cơ chế CHỐNG OVERFIT hiệu quả nhất: ngăn mô hình "học
+                 thuộc" dữ liệu train khi val_loss đã bắt đầu xấu đi.
+               - patience=20 đủ kiên nhẫn để vượt qua các dao động tạm thời,
+                 không dừng quá vội (vì LR nhỏ nên cải thiện có thể chậm).
+               - restore_best_weights đảm bảo lấy đúng mô hình tốt nhất, không
+                 phải mô hình ở epoch cuối (có thể đã overfit).
+
+13. ReduceLROnPlateau — PATIENCE_LR = 5, LR_FACTOR = 0.45, min_lr = 1e-6
+    ───────────────────────────────────────────────────────────────────
+   • Vai trò : Khi val_loss "chững lại" (plateau) 5 epoch, GIẢM learning rate
+               còn 45% (×0.45) để mô hình "đi bước nhỏ hơn", tinh chỉnh sâu hơn.
+   • Lý do   : - Chiến lược "giảm dần tốc độ học" giúp hội tụ tới cực tiểu tốt
+                 hơn: ban đầu học nhanh, càng về sau càng tinh.
+               - patience=5 nhỏ hơn EarlyStopping(20) → cơ chế giảm LR phản ứng
+                 TRƯỚC, cho mô hình cơ hội cải thiện trước khi bị dừng hẳn.
+               - min_lr=1e-6 chặn LR giảm về 0 (sẽ ngừng học hoàn toàn).
+
+14. ModelCheckpoint — save_best_only=True
+    ──────────────────────────────────────
+   • Vai trò : Tự động lưu lại mô hình có val_loss tốt nhất ra file .keras.
+   • Lý do   : Đảm bảo luôn giữ được phiên bản tốt nhất kể cả khi train tiếp tục
+               bị xấu đi — an toàn cho việc triển khai.
+
+
+────────────────────────────────────────────────────────────────────────────
+ PHẦN F — TIỀN XỬ LÝ & ĐÁNH GIÁ (bổ trợ)
+────────────────────────────────────────────────────────────────────────────
+
+15. MinMaxScaler (0, 1) — chuẩn hóa dữ liệu
+    ────────────────────────────────────────
+   • Lý do   : - Mạng nơ-ron học tốt và ổn định hơn khi dữ liệu nằm trong khoảng
+                 nhỏ [0,1]; giúp gradient ổn định, hội tụ nhanh.
+               - QUAN TRỌNG: scaler chỉ fit() TRÊN TẬP TRAIN, rồi transform cho
+                 Val/Test. Tránh rò rỉ thông tin (data leakage) từ tương lai.
+               - Lưu scaler.pkl để dùng lại khi triển khai thực tế.
+
+16. Loss = MSE, Metric = MAE; Đánh giá = RMSE, MAE, MAPE, R²
+    ────────────────────────────────────────────────────────
+   • Lý do   : - MSE làm hàm mất mát: phạt mạnh sai số lớn → phù hợp khi cần
+                 tránh dự báo lệch nhiều (quan trọng cho autoscaling).
+               - Đánh giá đa chỉ số để nhìn toàn diện:
+                   RMSE — sai số trung bình, nhạy outlier (cùng đơn vị %).
+                   MAE  — sai số tuyệt đối trung bình, dễ diễn giải.
+                   MAPE — sai số theo phần trăm, so sánh tương đối.
+                   R²   — mức độ giải thích phương sai (1.0 = hoàn hảo).
+
+17. Seed = 42  (tf & numpy)
+    ────────────────────────
+   • Lý do   : Cố định seed ngẫu nhiên để kết quả TÁI LẬP ĐƯỢC (reproducible) —
+               yêu cầu bắt buộc cho tính khoa học của đồ án.
+
+
+────────────────────────────────────────────────────────────────────────────
+ PHẦN G — BẢNG TÓM TẮT NHANH (dùng cho slide báo cáo)
+────────────────────────────────────────────────────────────────────────────
+
+  Tham số            Giá trị     Vai trò chính              Lý do cốt lõi
+  ───────────────────────────────────────────────────────────────────────
+  LOOK_BACK          24 (2 giờ)  Cửa sổ lịch sử             Đủ ngữ cảnh ngắn hạn
+  Train/Val/Test     80/10/10    Chia dữ liệu               Chuẩn, theo thời gian
+  Số lớp GRU         2           Học phân cấp               Cân bằng năng lực
+  GRU units          50, 50      Dung lượng nhớ             Vừa, tránh overfit
+  Dense units        25          Thu hẹp đặc trưng          Funnel 50→25→1
+  Dropout            0.2         Chống overfit              Mức nhẹ–vừa
+  L2                 0.001       Chống overfit              Phạt trọng số nhẹ
+  Batch size         32          Cập nhật theo lô           "Mặc định vàng"
+  Learning rate      1e-4        Tốc độ học                 Thận trọng, ổn định
+  Epochs             100         Trần vòng lặp              EarlyStop tự dừng
+  EarlyStop patience 20          Chống overfit              Lấy mô hình tốt nhất
+  ReduceLR           ×0.45 / 5   Tinh chỉnh hội tụ          Học chậm dần về cuối
+
+────────────────────────────────────────────────────────────────────────────
+ NGUYÊN TẮC THIẾT KẾ TỔNG QUÁT (kết luận cho báo cáo)
+────────────────────────────────────────────────────────────────────────────
+
+  Toàn bộ tham số được chọn theo TRIẾT LÝ "ĐƠN GIẢN ĐỦ DÙNG":
+  bắt đầu từ kiến trúc vừa phải, kết hợp NHIỀU LỚP CHỐNG OVERFIT
+  (Dropout + L2 + EarlyStopping), và để các siêu tham số dưới dạng "công tắc"
+  có thể tinh chỉnh khi quan sát đường cong loss (loss curve):
+
+     • Nếu UNDERFIT (loss cao ở cả train & val):
+         → tăng GRU_UNITS / DENSE_UNITS / LOOK_BACK, giảm Dropout & L2.
+     • Nếu OVERFIT (train loss thấp, val loss cao):
+         → tăng Dropout / L2, bật BatchNorm, giảm units, giữ EarlyStopping.
+
+  Cách tiếp cận này vừa khoa học (có cơ sở lý thuyết), vừa thực tiễn (dễ điều
+  chỉnh dựa trên kết quả thực nghiệm), phù hợp mục tiêu dự báo CPU chính xác
+  phục vụ autoscaling chủ động trên Kubernetes.
+
+════════════════════════════════════════════════════════════════════════════

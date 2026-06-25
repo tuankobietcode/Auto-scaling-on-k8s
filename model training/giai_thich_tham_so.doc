@@ -1,0 +1,198 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+      xmlns:w="urn:schemas-microsoft-com:office:word"
+      xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="utf-8">
+<meta name="ProgId" content="Word.Document">
+<title>Giải thích siêu tham số mô hình GRU</title>
+<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom></w:WordDocument></xml><![endif]-->
+<style>
+ @page { size: A4; margin: 2.0cm 2.0cm 2.0cm 2.5cm; }
+ body { font-family: "Times New Roman", serif; font-size: 13pt; line-height: 1.45; color:#1a1a1a; }
+ h1 { font-size: 19pt; color:#0D47A1; text-align:center; margin-bottom:2pt; }
+ h2 { font-size: 14.5pt; color:#0D47A1; border-bottom:2px solid #1565C0; padding-bottom:3px; margin-top:20pt; }
+ h3 { font-size: 13pt; color:#1565C0; margin-top:14pt; margin-bottom:4pt; }
+ .sub { text-align:center; font-style:italic; color:#5C6BC0; font-size:12pt; margin-top:0; }
+ .meta { text-align:center; font-size:11pt; color:#555; margin-bottom:14pt; }
+ p { margin:4pt 0; text-align:justify; }
+ ul { margin:4pt 0 8pt 0; }
+ li { margin:2pt 0; }
+ table { border-collapse:collapse; width:100%; margin:10pt 0; font-size:11.5pt; }
+ th { background:#1565C0; color:#fff; padding:6px 8px; text-align:left; border:1px solid #0D47A1; }
+ td { padding:5px 8px; border:1px solid #b0bec5; vertical-align:top; }
+ tr:nth-child(even) td { background:#f4f7fb; }
+ .box { background:#FFF8E1; border-left:4px solid #F9A825; padding:8px 12px; margin:10pt 0; }
+ .boxg { background:#E8F5E9; border-left:4px solid #2E7D32; padding:8px 12px; margin:10pt 0; }
+ .lbl { font-weight:bold; color:#0D47A1; }
+ code { font-family:"Consolas",monospace; background:#eceff1; padding:1px 4px; border-radius:3px; font-size:11pt; }
+</style>
+</head>
+<body>
+
+<h1>GIẢI THÍCH LỰA CHỌN SIÊU THAM SỐ (HYPERPARAMETERS)</h1>
+<p class="sub">Mô hình GRU — Dự báo CPU Usage phục vụ Autoscaling chủ động trên Kubernetes (KEDA)</p>
+<p class="meta">Đồ án tốt nghiệp &nbsp;•&nbsp; Tham chiếu mã nguồn: <code>train_gru.py</code></p>
+
+<p>Tài liệu giải thích cơ sở khoa học và thực tiễn của từng siêu tham số trong mô hình.
+Mỗi tham số được trình bày theo cấu trúc: <b>(1)</b> giá trị đang dùng — <b>(2)</b> vai trò —
+<b>(3)</b> lý do chọn — <b>(4)</b> đánh đổi (trade-off).</p>
+
+<!-- ========================== A ========================== -->
+<h2>A. Tham số dữ liệu (Data)</h2>
+
+<h3>1. LOOK_BACK = 24 — độ dài cửa sổ trượt (sliding window)</h3>
+<ul>
+<li><span class="lbl">Vai trò:</span> số bước thời gian quá khứ mô hình "nhìn lại" để dự báo bước kế tiếp. Dữ liệu lấy mẫu mỗi 5 phút &rarr; 24 bước = 24 × 5 = 120 phút = <b>2 giờ lịch sử</b>.</li>
+<li><span class="lbl">Lý do:</span> CPU hệ thống thường có chu kỳ ngắn hạn (giờ cao điểm, xử lý theo lô...). Cửa sổ 2 giờ đủ dài để học xu hướng và biến động gần, nhưng không quá dài gây nhiễu. Cửa sổ quá ngắn (vd 6 bước) &rarr; thiếu ngữ cảnh, dễ <b>underfit</b>; quá dài (vd 288 bước = 1 ngày) &rarr; tăng độ phức tạp, vanishing gradient, làm loãng tín hiệu gần (quan trọng nhất cho dự báo 5 phút).</li>
+<li><span class="lbl">Trade-off:</span> tăng LOOK_BACK &rarr; nhiều ngữ cảnh hơn nhưng chậm và khó học hơn.</li>
+</ul>
+
+<h3>2. TRAIN / VAL / TEST = 0.80 / 0.10 / 0.10 — tỉ lệ chia dữ liệu</h3>
+<ul>
+<li><span class="lbl">Vai trò:</span> chia tập huấn luyện (học), kiểm định (chỉnh tham số, chống overfit) và kiểm tra (đánh giá khách quan cuối cùng).</li>
+<li><span class="lbl">Lý do:</span> 80% cho train là tỉ lệ tiêu chuẩn, đủ dữ liệu để GRU học. <b>Quan trọng:</b> chia theo <b>thứ tự thời gian (chronological)</b>, KHÔNG xáo trộn. Vì đây là chuỗi thời gian, shuffle sẽ làm rò rỉ thông tin tương lai vào quá khứ (<i>data leakage</i>) &rarr; kết quả đánh giá ảo. Tập Test nằm ở cuối (dữ liệu mới nhất) mô phỏng đúng kịch bản thực tế: dùng quá khứ dự báo tương lai.</li>
+</ul>
+
+<!-- ========================== B ========================== -->
+<h2>B. Kiến trúc mô hình (Architecture)</h2>
+
+<h3>3. Số lớp GRU = 2 (xếp chồng / stacked GRU)</h3>
+<ul>
+<li><span class="lbl">Vai trò:</span> lớp GRU 1 (<code>return_sequences=True</code>) học đặc trưng tạm thời cấp thấp và truyền toàn bộ chuỗi cho lớp 2; lớp GRU 2 tổng hợp thành biểu diễn cấp cao rồi xuất hidden state cuối cùng.</li>
+<li><span class="lbl">Lý do:</span> 2 lớp cho phép học biểu diễn phân cấp (hierarchical), mạnh hơn 1 lớp khi chuỗi có cả mẫu ngắn hạn lẫn xu hướng dài. Không chọn 3–4 lớp vì dữ liệu CPU đơn biến (univariate) không quá phức tạp; thêm lớp &rarr; tăng nguy cơ overfit, huấn luyện lâu, lợi ích biên giảm dần (<i>diminishing returns</i>).</li>
+<li><span class="lbl">Kết luận:</span> 2 lớp là điểm cân bằng tốt giữa năng lực biểu diễn và rủi ro overfit.</li>
+</ul>
+
+<h3>4. GRU_UNITS_1 = 50, GRU_UNITS_2 = 50 — số neuron mỗi lớp GRU</h3>
+<ul>
+<li><span class="lbl">Vai trò:</span> số đơn vị ẩn (hidden units) — quyết định "dung lượng nhớ" và khả năng biểu diễn của mỗi lớp.</li>
+<li><span class="lbl">Lý do:</span> 50 là giá trị phổ biến, đã kiểm chứng cho chuỗi thời gian đơn biến cỡ vừa — đủ lớn để học mẫu phức tạp, đủ nhỏ để tránh overfit và giữ thời gian huấn luyện hợp lý. Lũy thừa của 2 (32, 64, 128) cũng dùng được, nhưng 50 cho cân bằng hiệu năng/độ phức tạp tốt trong thực nghiệm.</li>
+<li><span class="lbl">Trade-off:</span> &uarr; units &rarr; năng lực tăng (giảm underfit) nhưng dễ overfit và chậm; &darr; units &rarr; nhẹ, regularize tự nhiên, nhưng có thể underfit.</li>
+</ul>
+
+<h3>5. DENSE_UNITS = 25 — lớp Dense ẩn trước đầu ra</h3>
+<ul>
+<li><span class="lbl">Vai trò:</span> lớp fully-connected trung gian biến đổi biểu diễn từ GRU (50 chiều) thành đặc trưng cô đọng trước khi cho ra 1 giá trị dự báo.</li>
+<li><span class="lbl">Lý do:</span> chọn 25 &asymp; 1/2 số units GRU. Đây là quy tắc "thu hẹp dần" (<i>funnel/bottleneck</i>): giảm chiều từ từ 50 &rarr; 25 &rarr; 1 giúp chắt lọc thông tin mượt mà thay vì nén đột ngột. Dùng kích hoạt <b>ReLU</b> để thêm phi tuyến.</li>
+<li><span class="lbl">Lớp cuối:</span> <code>Dense(1)</code> không có activation (tuyến tính) — đúng cho bài toán hồi quy dự báo 1 giá trị liên tục.</li>
+</ul>
+
+<!-- ========================== C ========================== -->
+<h2>C. Chống quá khớp (Regularization)</h2>
+
+<h3>6. DROPOUT_RATE = 0.2 — tắt ngẫu nhiên 20% neuron khi train</h3>
+<ul>
+<li><span class="lbl">Vai trò:</span> mỗi bước huấn luyện ngẫu nhiên "tắt" 20% neuron, buộc mạng không phụ thuộc vào một số neuron nhất định &rarr; học đặc trưng tổng quát hơn, chống <b>overfit</b>.</li>
+<li><span class="lbl">Lý do:</span> 0.2 là mức nhẹ–vừa, phù hợp khi mô hình không quá lớn; đặt sau mỗi lớp GRU để điều hòa luồng đặc trưng. Không chọn cao (0.4–0.5) vì dễ underfit; không chọn 0 vì mất lớp bảo vệ.</li>
+<li><span class="lbl">Trade-off:</span> &uarr; dropout &rarr; regularize mạnh hơn (tốt khi overfit), nhưng quá mức &rarr; underfit.</li>
+</ul>
+
+<h3>7. L2_REG = 0.001 — L2 weight regularization (weight decay)</h3>
+<ul>
+<li><span class="lbl">Vai trò:</span> thêm vào hàm mất mát một khoản phạt tỉ lệ với bình phương trọng số &rarr; "ép" trọng số nhỏ lại, mô hình mượt và ổn định hơn, giảm overfit.</li>
+<li><span class="lbl">Lý do:</span> 0.001 là giá trị nhỏ, chuẩn mực — đủ kiềm chế trọng số lớn mà không bóp méo quá trình học. Kết hợp Dropout + L2 cho hiệu ứng regularize bổ trợ.</li>
+<li><span class="lbl">Trade-off:</span> &uarr; L2 &rarr; mô hình đơn giản hơn (chống overfit) nhưng quá cao sẽ underfit.</li>
+</ul>
+
+<h3>8. USE_BATCH_NORM = False — Batch Normalization (tùy chọn)</h3>
+<ul>
+<li><span class="lbl">Vai trò:</span> chuẩn hóa đầu ra trung gian để ổn định và tăng tốc huấn luyện.</li>
+<li><span class="lbl">Lý do tắt:</span> với mạng GRU 2 lớp cỡ vừa đã có Dropout + L2, BatchNorm không cần thiết và đôi khi gây bất ổn cho mạng hồi tiếp (RNN). Để dưới dạng "công tắc" bật khi gặp huấn luyện không ổn định hoặc overfit nặng.</li>
+</ul>
+
+<!-- ========================== D ========================== -->
+<h2>D. Quá trình huấn luyện (Training)</h2>
+
+<h3>9. BATCH_SIZE = 32 — kích thước lô</h3>
+<ul>
+<li><span class="lbl">Vai trò:</span> số mẫu xử lý trước mỗi lần cập nhật trọng số.</li>
+<li><span class="lbl">Lý do:</span> 32 là "mặc định vàng" trong deep learning — cân bằng giữa độ ổn định của gradient (lô lớn) và khả năng thoát cực tiểu cục bộ nhờ nhiễu gradient (lô nhỏ); vừa bộ nhớ, huấn luyện nhanh, hội tụ ổn định.</li>
+<li><span class="lbl">Trade-off:</span> &darr; batch &rarr; gradient nhiễu hơn (đôi khi tổng quát tốt hơn nhưng chậm); &uarr; batch &rarr; mượt nhưng dễ kẹt cực tiểu.</li>
+</ul>
+
+<h3>10. LEARNING_RATE = 1e-4 (0.0001) — tốc độ học</h3>
+<ul>
+<li><span class="lbl">Vai trò:</span> độ lớn mỗi bước cập nhật trọng số — tham số nhạy cảm nhất.</li>
+<li><span class="lbl">Lý do:</span> 1e-4 là mức thận trọng (nhỏ hơn mặc định 1e-3 của Adam): học chậm nhưng ổn định, tránh "nhảy vọt" làm loss dao động/phân kỳ; phù hợp chuỗi thời gian cần hội tụ mượt. Dùng kèm <b>Adam</b> (tự điều chỉnh learning rate thích nghi) &rarr; kết hợp ổn định.</li>
+<li><span class="lbl">Trade-off:</span> &darr; LR &rarr; an toàn nhưng chậm; &uarr; LR &rarr; nhanh nhưng dễ phân kỳ.</li>
+</ul>
+
+<h3>11. EPOCHS = 100 — số vòng lặp tối đa</h3>
+<ul>
+<li><span class="lbl">Lý do:</span> đặt 100 là <b>giới hạn trần</b>, không nhất thiết chạy hết. EarlyStopping sẽ tự dừng sớm khi mô hình ngừng cải thiện &rarr; 100 chỉ đảm bảo "đủ chỗ" để hội tụ.</li>
+</ul>
+
+<!-- ========================== E ========================== -->
+<h2>E. Callbacks — cơ chế điều khiển thông minh khi train</h2>
+
+<h3>12. EarlyStopping — patience = 20, restore_best_weights = True</h3>
+<ul>
+<li><span class="lbl">Vai trò:</span> theo dõi <code>val_loss</code>; nếu sau 20 epoch liên tiếp không cải thiện thì dừng sớm và khôi phục trọng số tốt nhất.</li>
+<li><span class="lbl">Lý do:</span> cơ chế chống overfit hiệu quả nhất — ngăn mô hình "học thuộc" train khi val_loss đã xấu đi. patience = 20 đủ kiên nhẫn vượt dao động tạm thời (do LR nhỏ nên cải thiện chậm). <code>restore_best_weights</code> đảm bảo lấy đúng mô hình tốt nhất, không phải epoch cuối.</li>
+</ul>
+
+<h3>13. ReduceLROnPlateau — patience = 5, factor = 0.45, min_lr = 1e-6</h3>
+<ul>
+<li><span class="lbl">Vai trò:</span> khi val_loss chững lại (<i>plateau</i>) 5 epoch, giảm learning rate còn 45% để mô hình "đi bước nhỏ hơn", tinh chỉnh sâu hơn.</li>
+<li><span class="lbl">Lý do:</span> chiến lược "giảm dần tốc độ học" giúp hội tụ tới cực tiểu tốt hơn (đầu học nhanh, cuối tinh chỉnh). patience = 5 nhỏ hơn EarlyStopping (20) &rarr; giảm LR phản ứng trước, cho mô hình cơ hội cải thiện trước khi bị dừng hẳn. <code>min_lr=1e-6</code> chặn LR về 0.</li>
+</ul>
+
+<h3>14. ModelCheckpoint — save_best_only = True</h3>
+<ul>
+<li><span class="lbl">Vai trò &amp; lý do:</span> tự động lưu mô hình có val_loss tốt nhất ra file <code>.keras</code>, đảm bảo luôn giữ phiên bản tốt nhất kể cả khi train tiếp tục xấu đi — an toàn cho triển khai.</li>
+</ul>
+
+<!-- ========================== F ========================== -->
+<h2>F. Tiền xử lý &amp; đánh giá (bổ trợ)</h2>
+
+<h3>15. MinMaxScaler (0, 1) — chuẩn hóa dữ liệu</h3>
+<ul>
+<li>Mạng nơ-ron học tốt và ổn định hơn khi dữ liệu trong khoảng nhỏ [0,1]; gradient ổn định, hội tụ nhanh.</li>
+<li><b>Quan trọng:</b> scaler chỉ <code>fit()</code> trên tập <b>Train</b>, rồi <code>transform</code> cho Val/Test &rarr; tránh rò rỉ thông tin (<i>data leakage</i>). Lưu <code>scaler.pkl</code> để tái sử dụng khi triển khai.</li>
+</ul>
+
+<h3>16. Loss = MSE, Metric = MAE; Đánh giá = RMSE, MAE, MAPE, R²</h3>
+<ul>
+<li>MSE làm hàm mất mát: phạt mạnh sai số lớn &rarr; phù hợp khi cần tránh dự báo lệch nhiều (quan trọng cho autoscaling).</li>
+<li>Đánh giá đa chỉ số: <b>RMSE</b> (sai số trung bình, nhạy outlier), <b>MAE</b> (tuyệt đối trung bình, dễ diễn giải), <b>MAPE</b> (theo phần trăm, so sánh tương đối), <b>R²</b> (mức giải thích phương sai, 1.0 = hoàn hảo).</li>
+</ul>
+
+<h3>17. Seed = 42 (tf &amp; numpy)</h3>
+<ul>
+<li>Cố định seed ngẫu nhiên để kết quả <b>tái lập được</b> (reproducible) — yêu cầu bắt buộc cho tính khoa học của đồ án.</li>
+</ul>
+
+<!-- ========================== G ========================== -->
+<h2>G. Bảng tóm tắt nhanh (dùng cho slide báo cáo)</h2>
+
+<table>
+<tr><th>Tham số</th><th>Giá trị</th><th>Vai trò chính</th><th>Lý do cốt lõi</th></tr>
+<tr><td>LOOK_BACK</td><td>24 (2 giờ)</td><td>Cửa sổ lịch sử</td><td>Đủ ngữ cảnh ngắn hạn</td></tr>
+<tr><td>Train/Val/Test</td><td>80/10/10</td><td>Chia dữ liệu</td><td>Chuẩn, theo thời gian</td></tr>
+<tr><td>Số lớp GRU</td><td>2</td><td>Học phân cấp</td><td>Cân bằng năng lực</td></tr>
+<tr><td>GRU units</td><td>50, 50</td><td>Dung lượng nhớ</td><td>Vừa, tránh overfit</td></tr>
+<tr><td>Dense units</td><td>25</td><td>Thu hẹp đặc trưng</td><td>Funnel 50&rarr;25&rarr;1</td></tr>
+<tr><td>Dropout</td><td>0.2</td><td>Chống overfit</td><td>Mức nhẹ–vừa</td></tr>
+<tr><td>L2</td><td>0.001</td><td>Chống overfit</td><td>Phạt trọng số nhẹ</td></tr>
+<tr><td>Batch size</td><td>32</td><td>Cập nhật theo lô</td><td>"Mặc định vàng"</td></tr>
+<tr><td>Learning rate</td><td>1e-4</td><td>Tốc độ học</td><td>Thận trọng, ổn định</td></tr>
+<tr><td>Epochs</td><td>100</td><td>Trần vòng lặp</td><td>EarlyStop tự dừng</td></tr>
+<tr><td>EarlyStop patience</td><td>20</td><td>Chống overfit</td><td>Lấy mô hình tốt nhất</td></tr>
+<tr><td>ReduceLR</td><td>×0.45 / 5</td><td>Tinh chỉnh hội tụ</td><td>Học chậm dần về cuối</td></tr>
+</table>
+
+<!-- ========================== Kết luận ========================== -->
+<h2>Nguyên tắc thiết kế tổng quát (kết luận)</h2>
+<p>Toàn bộ tham số được chọn theo triết lý <b>"đơn giản đủ dùng"</b>: bắt đầu từ kiến trúc vừa phải, kết hợp nhiều lớp chống overfit (<b>Dropout + L2 + EarlyStopping</b>), và để các siêu tham số dưới dạng "công tắc" tinh chỉnh được khi quan sát đường cong loss:</p>
+
+<div class="box">
+<b>Nếu UNDERFIT</b> (loss cao ở cả train &amp; val): tăng <code>GRU_UNITS</code> / <code>DENSE_UNITS</code> / <code>LOOK_BACK</code>, giảm Dropout &amp; L2.
+</div>
+<div class="boxg">
+<b>Nếu OVERFIT</b> (train loss thấp, val loss cao): tăng Dropout / L2, bật BatchNorm, giảm units, giữ EarlyStopping.
+</div>
+
+<p>Cách tiếp cận này vừa khoa học (có cơ sở lý thuyết), vừa thực tiễn (dễ điều chỉnh dựa trên kết quả thực nghiệm), phù hợp mục tiêu dự báo CPU chính xác phục vụ autoscaling chủ động trên Kubernetes.</p>
+
+</body>
+</html>
