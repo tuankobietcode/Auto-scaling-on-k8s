@@ -1,0 +1,35 @@
+# ============================================================================
+# kind-cluster.yaml — Cụm Kubernetes 3 node mô phỏng đúng Biểu đồ triển khai
+#   - control-plane  (datn-control-plane)  : Control Plane (kube-apiserver/etcd/...)
+#   - worker  #1      (datn-worker)          : "management"  -> predictor, Prometheus,
+#                                              Pushgateway, Grafana, kube-state-metrics
+#   - worker  #2      (datn-worker2)         : "workload"    -> các pod web service
+#
+# Thay cho 4 VM trên OpenStack: kind dựng mỗi node là 1 container Docker trên CÙNG 1 máy.
+# HAProxy chạy TRONG cluster (06-haproxy.yaml) nên KHÔNG cần VM HAProxy riêng.
+#
+# Các NodePort được map ra host qua control-plane (kube-proxy tự route tới đúng pod
+# dù pod nằm ở worker nào). Truy cập từ Windows: http://localhost:<port>.
+# ============================================================================
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: datn
+nodes:
+  # ---------- Control Plane ----------
+  - role: control-plane
+    extraPortMappings:
+      - { containerPort: 30080, hostPort: 30080, protocol: TCP }   # Web qua HAProxy
+      - { containerPort: 30084, hostPort: 30084, protocol: TCP }   # HAProxy stats
+      - { containerPort: 30090, hostPort: 30090, protocol: TCP }   # Prometheus
+      - { containerPort: 30060, hostPort: 30060, protocol: TCP }   # Pushgateway
+      - { containerPort: 30030, hostPort: 30030, protocol: TCP }   # Grafana
+
+  # ---------- Worker 1 = management ----------
+  - role: worker
+    labels:
+      node-role: management
+
+  # ---------- Worker 2 = workload ----------
+  - role: worker
+    labels:
+      node-role: workload
