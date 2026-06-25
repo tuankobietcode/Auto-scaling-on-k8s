@@ -1,0 +1,29 @@
+# ============================================================================
+# 99-carserv-nodeport-patch.yaml
+# Áp SAU khi đã apply 05-carserv-webservice.yaml.
+#
+# Mục đích: chuyển carserv-svc từ ClusterIP -> NodePort 30080 để HAProxy
+# (server riêng) có thể trỏ thẳng tới wor1/worker2:30080.
+#
+# => Với mô hình HAProxy NGOÀI cluster, KHÔNG cần 06-haproxy.yaml (HAProxy
+#    chạy trong cluster) nữa — bỏ qua file đó để tránh 2 lớp HAProxy chồng nhau.
+#
+# Áp dụng:
+#   kubectl apply -f 99-carserv-nodeport-patch.yaml
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: carserv-svc
+  namespace: carserv
+  labels:
+    app: carserv
+spec:
+  type: NodePort
+  selector:
+    app: carserv
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      nodePort: 30080

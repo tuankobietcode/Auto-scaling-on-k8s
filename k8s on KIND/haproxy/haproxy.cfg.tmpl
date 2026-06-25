@@ -1,0 +1,49 @@
+# ============================================================================
+# haproxy.cfg.tmpl  — template cho HAProxy chạy trên VM Load Balancer riêng.
+# Các biến ${WORKER1_IP} / ${WORKER2_IP} / ${WEB_NODEPORT} được thay bằng
+# 05-install-haproxy.sh (dùng envsubst). KHÔNG sửa file kết quả thủ công.
+#
+# Vai trò: nhận traffic người dùng ở :80, cân bằng round-robin tới NodePort
+# web service (carserv-svc) trên CẢ HAI worker. NodePort mở trên mọi node,
+# kube-proxy tự định tuyến tới pod thực tế dù pod nằm ở worker nào.
+#
+# Trang thống kê: http://<HAPROXY_IP>:8404/
+# ============================================================================
+global
+    log /dev/log local0 info
+    maxconn 4096
+    daemon
+
+defaults
+    mode    http
+    log     global
+    option  httplog
+    option  dontlognull
+    option  forwardfor
+    option  http-server-close
+    timeout connect 5s
+    timeout client  50s
+    timeout server  50s
+    retries 3
+
+# ---- Frontend: cổng vào cho người dùng ----
+frontend http_in
+    bind *:80
+    default_backend web_service
+
+# ---- Backend: 2 worker, qua NodePort của carserv-svc ----
+backend web_service
+    balance roundrobin
+    option httpchk GET /
+    http-check expect status 200
+    default-server check inter 3s fall 3 rise 2
+    server worker1 ${WORKER1_IP}:${WEB_NODEPORT}
+    server worker2 ${WORKER2_IP}:${WEB_NODEPORT}
+
+# ---- Trang thống kê HAProxy ----
+frontend stats
+    bind *:8404
+    stats enable
+    stats uri /
+    stats refresh 5s
+    stats show-legends
