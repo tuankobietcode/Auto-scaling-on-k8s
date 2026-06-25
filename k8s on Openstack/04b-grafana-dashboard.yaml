@@ -1,0 +1,159 @@
+# Provision dashboard cho Grafana — dashboard tự nạp mỗi lần Grafana khởi động.
+# Gồm 2 ConfigMap:
+#   1) grafana-dashboard-provider : khai báo "đọc dashboard từ thư mục nào"
+#   2) grafana-dashboards          : chứa file JSON dashboard (4 panel DATN)
+# Cả hai được mount vào pod Grafana (xem 04-grafana.yaml đã sửa).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: monitoring
+data:
+  providers.yaml: |
+    apiVersion: 1
+    providers:
+      - name: 'datn'
+        orgId: 1
+        folder: 'DATN'
+        type: file
+        disableDeletion: false
+        editable: true
+        updateIntervalSeconds: 30
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards
+          foldersFromFilesStructure: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: monitoring
+data:
+  datn-autoscaling.json: |
+    {
+      "uid": "datn-autoscaling",
+      "title": "DATN Auto-scaling (GRU + KEDA)",
+      "editable": true,
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "10s",
+      "time": { "from": "now-1h", "to": "now" },
+      "timepicker": {},
+      "templating": { "list": [] },
+      "annotations": { "list": [] },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Auto-scaling: Pod khuyến nghị (GRU) vs thực tế (KEDA)",
+          "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "stepInterval": "", "lineInterpolation": "stepAfter" }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+            "tooltip": { "mode": "multi", "sort": "none" }
+          },
+          "targets": [
+            { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "predicted_n_pods{namespace=\"carserv\"}", "legendFormat": "Khuyến nghị (GRU)" },
+            { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "count(kube_pod_status_phase{namespace=\"carserv\",pod=~\"carserv-deploy-.*\",phase=\"Running\"})", "legendFormat": "Thực tế (KEDA)" }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "CPU mô phỏng (đầu vào) vs CPU dự báo (GRU)",
+          "gridPos": { "h": 9, "w": 24, "x": 0, "y": 9 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+            "tooltip": { "mode": "multi", "sort": "none" }
+          },
+          "targets": [
+            { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "testbed_cpu_usage{namespace=\"carserv\"}", "legendFormat": "CPU mô phỏng (vào)" },
+            { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "predicted_total_cpu{namespace=\"carserv\"}", "legendFormat": "CPU tổng dự báo (GRU)" },
+            { "refId": "C", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"carserv\",pod=~\"carserv-deploy-.*\",container=\"carserv\"}[2m]))*100", "legendFormat": "CPU thật (k6)" }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Pod thực tế hiện tại",
+          "gridPos": { "h": 6, "w": 6, "x": 0, "y": 18 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" } }, "overrides": [] },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+          "targets": [
+            { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "count(kube_pod_status_phase{namespace=\"carserv\",pod=~\"carserv-deploy-.*\",phase=\"Running\"})", "legendFormat": "pods" }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Pod khuyến nghị (GRU)",
+          "gridPos": { "h": 6, "w": 6, "x": 6, "y": 18 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" } }, "overrides": [] },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+          "targets": [
+            { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max(predicted_n_pods{namespace=\"carserv\"})", "legendFormat": "pods" }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "Util/pod dự báo (%) — cơ sở scale",
+          "gridPos": { "h": 6, "w": 6, "x": 12, "y": 18 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "percent", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "value": null, "color": "green" }, { "value": 30, "color": "blue" }, { "value": 80, "color": "red" } ] } }, "overrides": [] },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+          "targets": [
+            { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max(predicted_pod_util{namespace=\"carserv\"})", "legendFormat": "util" }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Util CPU mỗi pod (% so với limit 250m) + ngưỡng scale 80/30",
+          "description": "Mỗi đường = 1 pod đang chạy (CPU thật / limit). Đường đậm = TB/pod dự báo (GRU) — biến quyết định. Vượt 80% -> scale up; dưới 30% -> scale down.",
+          "gridPos": { "h": 9, "w": 24, "x": 0, "y": 24 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 110,
+              "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "thresholdsStyle": { "mode": "line" } },
+              "thresholds": { "mode": "absolute", "steps": [ { "value": null, "color": "green" }, { "value": 30, "color": "orange" }, { "value": 80, "color": "red" } ] }
+            },
+            "overrides": [
+              { "matcher": { "id": "byName", "options": "Dự báo TB/pod (GRU)" }, "properties": [ { "id": "custom.lineWidth", "value": 4 }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } } ] }
+            ]
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          },
+          "targets": [
+            { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(container_cpu_usage_seconds_total{namespace=\"carserv\",pod=~\"carserv-deploy-.*\",container=\"carserv\"}[2m]) / 0.25 * 100", "legendFormat": "{{pod}}" },
+            { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "predicted_pod_util{namespace=\"carserv\"}", "legendFormat": "Dự báo TB/pod (GRU)" }
+          ]
+        }
+      ]
+    }

@@ -1,0 +1,60 @@
+# Predictor (AI model GRU) — đọc lịch sử CPU từ Prometheus, dự báo, tính N_pods,
+# rồi HTTP POST lên Pushgateway. KEDA sẽ đọc lại predicted_n_pods để scale.
+#
+# >>> THAY <PREDICTOR_IMAGE> bằng image predictor của bạn <<<
+# Image PHẢI chứa sẵn 3 file (theo predictor.py):
+#   /app/gru_cpu_model.keras  /app/scaler.pkl  /app/model_config.json
+#
+# Predictor KHÔNG cần quyền K8s (chỉ gọi Prometheus + Pushgateway), nên không gắn RBAC.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: predictor
+  namespace: carserv
+  labels:
+    app: predictor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: predictor
+  template:
+    metadata:
+      labels:
+        app: predictor
+    spec:
+      containers:
+        - name: predictor
+          image: datn/predictor:v1             # <-- ĐIỀN IMAGE PREDICTOR TẠI ĐÂY
+          imagePullPolicy: IfNotPresent    
+          env:
+            # Dùng DNS nội bộ cluster (không phụ thuộc IP node mới)
+            - name: PROMETHEUS_URL
+              value: "http://prometheus.monitoring.svc.cluster.local:9090"
+            - name: PUSHGATEWAY_URL
+              value: "http://pushgateway.monitoring.svc.cluster.local:9091"
+            - name: NAMESPACE
+              value: "carserv"
+            - name: TARGET_DEPLOYMENT
+              value: "carserv-deploy"
+            - name: POD_CAPACITY
+              value: "25"          # = limits.cpu của pod (250m -> 25), mẫu số tính %util
+            - name: SCALE_UP_UTIL
+              value: "80"          # %util/pod > 80 -> scale up
+            - name: SCALE_DOWN_UTIL
+              value: "30"          # %util/pod < 30 -> scale down
+            - name: TARGET_UTIL
+              value: "65"          # kéo %util/pod về ~65 khi scale
+            - name: BUFFER
+              value: "1.2"         # cấp dư pod cho an toàn SLA (bù dự báo hụt)
+            - name: MIN_PODS
+              value: "1"
+            - name: MAX_PODS
+              value: "10"
+            - name: INTERVAL_SEC
+              value: "300"
+            - name: TESTBED_MODE
+              value: "false"          # đổi "true" khi bắn tải giả bằng k6/testbed
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { cpu: 500m, memory: 1Gi }

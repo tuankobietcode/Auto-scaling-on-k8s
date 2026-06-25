@@ -1,0 +1,34 @@
+# KEDA ScaledObject — đọc metric predicted_n_pods (do predictor đẩy lên Prometheus
+# qua Pushgateway) và scale carserv-deploy đúng bằng số pod dự báo.
+#
+# Cơ chế: KEDA tính replicas = ceil(metricValue / threshold).
+# Đặt threshold = 1  =>  replicas = predicted_n_pods  (đúng công thức của predictor).
+#
+# YÊU CẦU: phải cài KEDA operator TRƯỚC (xem README, mục KEDA).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: carserv-scaler
+  namespace: carserv
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: carserv-deploy
+  pollingInterval: 30        # KEDA query Prometheus mỗi 30s
+  cooldownPeriod: 120        # chờ 120s trước khi scale về minReplicaCount
+  minReplicaCount: 1         # = MIN_PODS trong predictor
+  maxReplicaCount: 10        # = MAX_PODS trong predictor
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 120
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+        metricName: predicted_n_pods
+        # Lấy giá trị N_pods predictor khuyến nghị cho namespace carserv
+        query: max(predicted_n_pods{namespace="carserv"})
+        threshold: "1"

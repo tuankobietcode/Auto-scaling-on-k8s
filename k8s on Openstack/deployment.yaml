@@ -1,0 +1,64 @@
+# k8s/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: predictor
+  namespace: carserv
+  labels:
+    app: predictor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: predictor
+  template:
+    metadata:
+      labels:
+        app: predictor
+    spec:
+      # FIX 1: đổi đúng hostname worker node 1
+      nodeSelector:
+        kubernetes.io/hostname: worker1
+
+      serviceAccountName: predictor-sa
+
+      containers:
+        - name: predictor
+          # FIX 2: đổi thành image bạn đã push lên Docker Hub
+          # ví dụ: nguyenvana/predictor:v1
+          image: your-dockerhub-username/predictor:v1
+          imagePullPolicy: Always
+
+          env:
+            # FIX 3: dùng IP thật thay vì DNS nội bộ service
+            - name: PROMETHEUS_URL
+              value: "http://192.168.180.43:30090"
+            # FIX 4: dùng IP + port thật của Pushgateway
+            - name: PUSHGATEWAY_URL
+              value: "http://192.168.180.43:30060"
+            - name: NAMESPACE
+              value: "carserv"
+            # FIX 5: đúng tên deployment cần scale
+            - name: TARGET_DEPLOYMENT
+              value: "carserv-deploy"
+            - name: CPU_PER_POD
+              value: "20"
+            - name: INTERVAL_SEC
+              value: "300"
+            - name: MIN_PODS
+              value: "1"
+            - name: MAX_PODS
+              value: "10"
+            - name: BUFFER
+              value: "1.2"
+
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30

@@ -1,0 +1,104 @@
+# HAProxy — load balancer đứng trước web service, expose NodePort 30080 (đúng thiết kế).
+# Cân bằng tải về Service carserv-svc (ClusterIP); kube-proxy phân phối tiếp tới các pod.
+# Trang stats ở cổng 8404 (NodePort 30084).
+#
+# Lưu ý: nếu bạn muốn chạy HAProxy trên 1 VM riêng (như "Load-balance node" trong thiết kế gốc)
+# thay vì trong cluster, dùng file haproxy.cfg này nhưng trỏ "server" tới <NODE_IP>:30080.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haproxy-config
+  namespace: monitoring
+data:
+  haproxy.cfg: |
+    global
+        log stdout format raw local0 info
+        maxconn 4096
+
+    defaults
+        mode http
+        log global
+        option httplog
+        option dontlognull
+        timeout connect 5s
+        timeout client  50s
+        timeout server  50s
+        retries 3
+
+    frontend http_front
+        bind *:8080
+        default_backend carserv_back
+
+    backend carserv_back
+        balance roundrobin
+        option httpchk GET /
+        # Trỏ tới ClusterIP service của web app qua DNS nội bộ cluster
+        server carserv carserv-svc.carserv.svc.cluster.local:80 check resolvers k8s
+
+    resolvers k8s
+        nameserver kube-dns kube-dns.kube-system.svc.cluster.local:53
+        resolve_retries 3
+        timeout retry 1s
+        hold valid 10s
+
+    frontend stats
+        bind *:8404
+        stats enable
+        stats uri /
+        stats refresh 5s
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: haproxy
+  namespace: monitoring
+  labels:
+    app: haproxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: haproxy
+  template:
+    metadata:
+      labels:
+        app: haproxy
+    spec:
+      containers:
+        - name: haproxy
+          image: haproxy:2.9-alpine
+          ports:
+            - containerPort: 8080
+            - containerPort: 8404
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { cpu: 200m, memory: 128Mi }
+          volumeMounts:
+            - name: config
+              mountPath: /usr/local/etc/haproxy/haproxy.cfg
+              subPath: haproxy.cfg
+      volumes:
+        - name: config
+          configMap:
+            name: haproxy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: haproxy
+  namespace: monitoring
+  labels:
+    app: haproxy
+spec:
+  type: NodePort
+  selector:
+    app: haproxy
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      nodePort: 30080
+    - name: stats
+      port: 8404
+      targetPort: 8404
+      nodePort: 30084

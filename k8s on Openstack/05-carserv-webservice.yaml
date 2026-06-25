@@ -1,0 +1,49 @@
+# Web service (workload chính) — đối tượng được autoscale.
+# >>> THAY <IMAGE> bằng image carserv thật của bạn (vd: your-registry/carserv:tag) <<<
+# replicas để 1: số bản sao thực tế do KEDA điều khiển (08-keda-scaledobject.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: carserv-deploy
+  namespace: carserv
+  labels:
+    app: carserv
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: carserv
+  template:
+    metadata:
+      labels:
+        app: carserv
+    spec:
+      containers:
+        - name: carserv
+          image: elroydevops/car-serv            # <-- ĐIỀN IMAGE WEB SERVICE TẠI ĐÂY
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80     # đổi nếu app lắng nghe cổng khác
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits:   { cpu: 250m, memory: 256Mi }
+          # readinessProbe/livenessProbe: bật khi biết health endpoint của app
+          # readinessProbe:
+          #   httpGet: { path: /, port: 80 }
+          #   initialDelaySeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: carserv-svc
+  namespace: carserv
+  labels:
+    app: carserv
+spec:
+  type: ClusterIP          # HAProxy đứng trước và expose ra NodePort 30080
+  selector:
+    app: carserv
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
